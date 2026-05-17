@@ -1,0 +1,22 @@
+# Development Dockerfile for Next.js
+FROM node:22-alpine
+
+WORKDIR /app
+
+# Install dependencies
+RUN apk add --no-cache libc6-compat
+
+# Copy package files first
+COPY package.json package-lock.json ./
+
+# Install dependencies
+RUN npm ci
+
+# Copy source code (will be overwritten by volume mount in dev)
+COPY . .
+
+# Expose port
+EXPOSE 3000
+
+# Start development server with explicit path to next
+CMD ["./node_modules/.bin/next", "dev"]
