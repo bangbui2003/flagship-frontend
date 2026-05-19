@@ -199,6 +199,7 @@ function TargetingTab({
 
   const [isUpdating, setIsUpdating] = useState(false);
   const [rolloutPercentage, setRolloutPercentage] = useState(100);
+  const [rolloutVariationId, setRolloutVariationId] = useState("");
   const [isAddRuleOpen, setIsAddRuleOpen] = useState(false);
 
   const handleToggle = async () => {
@@ -218,15 +219,15 @@ function TargetingTab({
   };
 
   const handleSaveRollout = async () => {
-    if (!version?.id) return;
+    if (!version?.id || !rolloutVariationId) return;
     setIsUpdating(true);
     try {
-      const catchAllRule = (version as FlagVersion & { targetingRules?: TargetingRule[] }).targetingRules?.find(
-        (r) => r.condition?.attribute === "key" && r.condition?.operator === "regex" && r.condition?.value === ".*"
+      const catchAllRule = version.targetingRules?.find(
+        (r) => r.condition?.attribute === "key" && r.condition?.op === "regex"
       );
       const ruleData = {
-        condition: { attribute: "key", operator: "regex", value: ".*" },
-        rollout: { percentage: rolloutPercentage },
+        condition: { attribute: "key", op: "regex", values: [".*"] },
+        rollout: [{ variationId: rolloutVariationId, weight: rolloutPercentage * 1000 }],
       };
       if (catchAllRule) {
         await api.rules.update(projectId, flagId, environment.id, version.id, catchAllRule.id, ruleData);
@@ -268,6 +269,22 @@ function TargetingTab({
           <CardDescription>Gradually roll out this feature to a percentage of users</CardDescription>
         </CardHeader>
         <CardContent className="space-y-6">
+          <div className="space-y-2">
+            <Label>Serve variation</Label>
+            <Select value={rolloutVariationId} onValueChange={setRolloutVariationId}>
+              <SelectTrigger>
+                <SelectValue placeholder="Select a variation to roll out" />
+              </SelectTrigger>
+              <SelectContent>
+                {variations.map((v) => (
+                  <SelectItem key={v.id} value={v.id}>{v.key}</SelectItem>
+                ))}
+                {variations.length === 0 && (
+                  <SelectItem value="__none__" disabled>No variations — create some first</SelectItem>
+                )}
+              </SelectContent>
+            </Select>
+          </div>
           <div className="space-y-4">
             <div className="flex items-center justify-between">
               <span className="text-sm text-muted-foreground">Rollout percentage</span>
@@ -286,7 +303,7 @@ function TargetingTab({
               {rolloutPercentage === 100 ? "All users will see this feature" : rolloutPercentage === 0 ? "No users will see this feature" : `Approximately ${rolloutPercentage}% of users will see this feature`}
             </span>
           </div>
-          <Button onClick={handleSaveRollout} disabled={isUpdating}>Save Rollout</Button>
+          <Button onClick={handleSaveRollout} disabled={isUpdating || !rolloutVariationId}>Save Rollout</Button>
         </CardContent>
       </Card>
 
@@ -363,14 +380,20 @@ function RuleCard({ rule, index, variations, onDelete }: { rule: TargetingRule; 
   const formatCondition = (cond: any): string => {
     if (cond.and) return cond.and.map(formatCondition).join(" AND ");
     if (cond.or) return cond.or.map(formatCondition).join(" OR ");
-    return `${cond.attribute} ${cond.operator} ${JSON.stringify(cond.value)}`;
+    const displayVal = Array.isArray(cond.values)
+      ? cond.values.length === 1 ? JSON.stringify(cond.values[0]) : JSON.stringify(cond.values)
+      : "?";
+    return `${cond.attribute} ${cond.op} ${displayVal}`;
   };
 
   const formatRollout = (roll: any): string => {
-    if (roll.percentage !== undefined) return `${roll.percentage}% of users`;
-    if (roll.variationKey) return `Serve "${roll.variationKey}"`;
-    if (roll.weights) return roll.weights.map((w: any) => `${w.weight}% → ${w.variationKey}`).join(", ");
-    return "Default";
+    if (!Array.isArray(roll) || roll.length === 0) return "Default";
+    return roll.map((r: any) => {
+      const variation = variations.find((v) => v.id === r.variationId);
+      const label = variation ? variation.key : r.variationId;
+      if (roll.length === 1 && r.weight === 100000) return `Serve "${label}"`;
+      return `${Math.round(r.weight / 1000)}% → "${label}"`;
+    }).join(", ");
   };
 
   return (
@@ -413,27 +436,28 @@ function AddRuleForm({
   const [attribute, setAttribute] = useState("email");
   const [operator, setOperator] = useState("contains");
   const [value, setValue] = useState("");
-  const [rolloutType, setRolloutType] = useState<"variation" | "percentage">("variation");
-  const [selectedVariation, setSelectedVariation] = useState("");
-  const [percentage, setPercentage] = useState(100);
+  const [selectedVariationKey, setSelectedVariationKey] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!versionId) return;
+    const variation = variations.find((v) => v.key === selectedVariationKey);
+    if (!variation) {
+      setError("Please select a variation to serve");
+      return;
+    }
     setIsSubmitting(true);
+    setError(null);
     try {
-      const ruleData = {
-        condition: { attribute, operator, value },
-        rollout: rolloutType === "variation" ? { variationKey: selectedVariation } : { percentage },
-      };
-      await fetch(
-        `${API_BASE_URL}/v1/projects/${projectId}/flags/${flagId}/environments/${environmentId}/versions/${versionId}/rules`,
-        { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(ruleData) }
-      );
+      await api.rules.create(projectId, flagId, environmentId, versionId, {
+        condition: { attribute, op: operator, values: [value] },
+        rollout: [{ variationId: variation.id, weight: 100000 }],
+      });
       onSuccess();
     } catch (err) {
-      console.error("Failed to create rule:", err);
+      setError(err instanceof Error ? err.message : "Failed to create rule");
     } finally {
       setIsSubmitting(false);
     }
@@ -441,7 +465,7 @@ function AddRuleForm({
 
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
-      <div className="space-y-4">
+      <div className="space-y-2">
         <Label>Condition</Label>
         <div className="grid grid-cols-3 gap-2">
           <Select value={attribute} onValueChange={setAttribute}>
@@ -460,41 +484,30 @@ function AddRuleForm({
               <SelectItem value="eq">equals</SelectItem>
               <SelectItem value="neq">not equals</SelectItem>
               <SelectItem value="contains">contains</SelectItem>
-              <SelectItem value="startsWith">starts with</SelectItem>
-              <SelectItem value="endsWith">ends with</SelectItem>
+              <SelectItem value="starts_with">starts with</SelectItem>
+              <SelectItem value="ends_with">ends with</SelectItem>
               <SelectItem value="in">in list</SelectItem>
               <SelectItem value="regex">matches regex</SelectItem>
             </SelectContent>
           </Select>
-          <Input placeholder="Value" value={value} onChange={(e) => setValue(e.target.value)} />
+          <Input placeholder="Value" value={value} onChange={(e) => setValue(e.target.value)} required />
         </div>
       </div>
-      <div className="space-y-4">
+      <div className="space-y-2">
         <Label>Then serve</Label>
-        <Select value={rolloutType} onValueChange={(v) => setRolloutType(v as any)}>
-          <SelectTrigger><SelectValue /></SelectTrigger>
+        <Select value={selectedVariationKey} onValueChange={setSelectedVariationKey}>
+          <SelectTrigger><SelectValue placeholder="Select variation" /></SelectTrigger>
           <SelectContent>
-            <SelectItem value="variation">Specific variation</SelectItem>
-            <SelectItem value="percentage">Percentage rollout</SelectItem>
+            {variations.map((v) => (<SelectItem key={v.id} value={v.key}>{v.key}</SelectItem>))}
+            {variations.length === 0 && <SelectItem value="__none__" disabled>No variations — create some first</SelectItem>}
           </SelectContent>
         </Select>
-        {rolloutType === "variation" ? (
-          <Select value={selectedVariation} onValueChange={setSelectedVariation}>
-            <SelectTrigger><SelectValue placeholder="Select variation" /></SelectTrigger>
-            <SelectContent>
-              {variations.map((v) => (<SelectItem key={v.id} value={v.key}>{v.key}</SelectItem>))}
-              {variations.length === 0 && <SelectItem value="true" disabled>No variations (create some first)</SelectItem>}
-            </SelectContent>
-          </Select>
-        ) : (
-          <div className="space-y-2">
-            <div className="flex items-center justify-between"><span className="text-sm">{percentage}%</span></div>
-            <Slider value={[percentage]} onValueChange={([v]) => setPercentage(v)} max={100} step={1} />
-          </div>
-        )}
       </div>
+      {error && <p className="text-sm text-destructive">{error}</p>}
       <DialogFooter>
-        <Button type="submit" disabled={isSubmitting}>{isSubmitting ? "Creating..." : "Create Rule"}</Button>
+        <Button type="submit" disabled={isSubmitting || !selectedVariationKey || !value}>
+          {isSubmitting ? "Creating..." : "Create Rule"}
+        </Button>
       </DialogFooter>
     </form>
   );

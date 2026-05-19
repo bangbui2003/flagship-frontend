@@ -48,11 +48,23 @@ export interface FlagVersion {
   createdAt: string;
 }
 
+export interface TargetingRuleCondition {
+  attribute: string;
+  op: string;
+  values: unknown[];
+}
+
+export interface TargetingRuleRolloutItem {
+  variationId: string;
+  weight: number;
+}
+
 export interface TargetingRule {
   id: string;
+  flagVersionId: string;
   orderIndex: number;
-  condition: Record<string, unknown>;
-  rollout: Record<string, unknown>;
+  condition: TargetingRuleCondition;
+  rollout: TargetingRuleRolloutItem[];
   createdAt: string;
 }
 

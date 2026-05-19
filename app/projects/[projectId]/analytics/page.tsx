@@ -1,6 +1,7 @@
 "use client";
 
-import { use, useState, useMemo } from "react";
+import { use, useState, useMemo, useEffect, Suspense } from "react";
+import { useRouter, useSearchParams, usePathname } from "next/navigation";
 import useSWR from "swr";
 import {
   BarChart3,
@@ -78,9 +79,23 @@ export default function AnalyticsPage({
 }) {
   const { projectId } = use(params);
   const { toast } = useToast();
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
   const [timeRange, setTimeRange] = useState("7d");
-  const [selectedEnvId, setSelectedEnvId] = useState<string>("");
   const [isExporting, setIsExporting] = useState(false);
+
+  const selectedEnvId = searchParams.get("env") ?? "";
+
+  const setSelectedEnvId = (envId: string) => {
+    const p = new URLSearchParams(searchParams.toString());
+    if (envId) {
+      p.set("env", envId);
+    } else {
+      p.delete("env");
+    }
+    router.replace(`${pathname}?${p.toString()}`);
+  };
 
   const { data: project } = useSWR<Project>(
     `/v1/projects/${projectId}`,
@@ -96,10 +111,13 @@ export default function AnalyticsPage({
     fetcher
   );
 
-  // Set default environment
-  if (environments?.length && !selectedEnvId) {
-    setSelectedEnvId(environments[0].id);
-  }
+  // Set default environment via useEffect to avoid setState-during-render
+  useEffect(() => {
+    if (environments?.length && !selectedEnvId) {
+      setSelectedEnvId(environments[0].id);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [environments]);
 
   // Calculate date range based on timeRange
   const dateParams = useMemo(() => {
@@ -368,37 +386,45 @@ export default function AnalyticsPage({
                 </CardHeader>
                 <CardContent>
                   {timeSeries && timeSeries.length > 0 ? (
-                    <div className="h-64 flex items-end gap-1">
-                      {timeSeries.slice(-14).map((point, i) => {
-                        const maxCount = Math.max(
-                          ...timeSeries.map((d) => d.evaluations),
-                          1
-                        );
-                        const height = (point.evaluations / maxCount) * 100;
+                    <div className="h-64 flex flex-col gap-2">
+                      {(() => {
+                        const points = timeSeries.slice(-14);
+                        const maxCount = Math.max(...points.map((d) => d.evaluations), 1);
                         return (
-                          <div
-                            key={point.timestamp}
-                            className="flex-1 flex flex-col items-center gap-2"
-                          >
-                            <div
-                              className="w-full bg-primary rounded-t transition-all hover:bg-primary/80 min-h-[2px]"
-                              style={{ height: `${Math.max(height, 2)}%` }}
-                              title={`${point.evaluations.toLocaleString()} evaluations`}
-                            />
-                            {timeSeries.length <= 14 && (
-                              <span className="text-xs text-muted-foreground truncate w-full text-center">
-                                {timeRange === "24h"
-                                  ? new Date(point.timestamp).toLocaleTimeString("en-US", {
-                                      hour: "numeric",
-                                    })
-                                  : new Date(point.timestamp).toLocaleDateString("en-US", {
-                                      weekday: "short",
-                                    })}
-                              </span>
+                          <>
+                            <div className="flex-1 flex items-end gap-1">
+                              {points.map((point) => {
+                                const heightPct = (point.evaluations / maxCount) * 100;
+                                return (
+                                  <div
+                                    key={point.timestamp}
+                                    className="flex-1 h-full flex items-end"
+                                  >
+                                    <div
+                                      className="w-full bg-primary rounded-t transition-all hover:bg-primary/80 min-h-[2px]"
+                                      style={{ height: `${Math.max(heightPct, 2)}%` }}
+                                      title={`${point.evaluations.toLocaleString()} evaluations`}
+                                    />
+                                  </div>
+                                );
+                              })}
+                            </div>
+                            {points.length <= 14 && (
+                              <div className="flex gap-1">
+                                {points.map((point) => (
+                                  <div key={`lbl-${point.timestamp}`} className="flex-1 text-center">
+                                    <span className="text-xs text-muted-foreground truncate block">
+                                      {timeRange === "24h"
+                                        ? new Date(point.timestamp).toLocaleTimeString("en-US", { hour: "numeric" })
+                                        : new Date(point.timestamp).toLocaleDateString("en-US", { weekday: "short" })}
+                                    </span>
+                                  </div>
+                                ))}
+                              </div>
                             )}
-                          </div>
+                          </>
                         );
-                      })}
+                      })()}
                     </div>
                   ) : (
                     <div className="h-64 flex items-center justify-center text-muted-foreground">
